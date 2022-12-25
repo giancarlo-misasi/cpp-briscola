@@ -27,7 +27,7 @@ public:
 };
 
 class GameAction : public Action<GameState> {
-    Card _card{Face::ACE, Suit::SWORD}; // TODO: I no like this
+    Card _card{Face::ACE, Suit::SWORD};
 public:
     GameAction() = default;
 
@@ -67,11 +67,7 @@ public:
     }
 
     float updateScore(const GameState &state, float backpropScore) override {
-        return backpropScore; // do nothing for now
-        // When the current player is our player, the enemy has performed its move and the score should be the inverse
-        // not sure if the above is true
-//        return state.current_player() == _player ? backpropScore : 1 - backpropScore;
-//        return state.current_player() == _player ? 1 - backpropScore : backpropScore;
+        return backpropScore;
     }
 };
 
@@ -183,43 +179,57 @@ void first_card_strategy(Game &game) {
     game.play(game.current_player_cards().front());
 }
 
-void highest_valued_card_strategy(Game &game) {
-    auto cards = game.current_player_cards();
-    std::sort(cards.begin(), cards.end(), ::sort_highest_face);
-
-    // no winner yet, play first highest value card
-    if (!game.current_trick_winner()) {
-        game.play(cards.front());
+void play_non_trump_before_trump(std::ranges::input_range auto &&cards, Game &game) {
+    if (cards.empty()) {
         return;
     }
 
-    // otherwise, find the best cards that can beat the winner
-    const auto winner = game.current_trick_winner().value();
     const auto trump = game.trump();
-    auto best = cards | std::ranges::views::filter([winner, trump](auto c) {
-        return winner.is_worse_than(c, trump);
+    auto not_trump = cards | std::ranges::views::filter([trump](auto c) {
+        return c.suit != trump;
     });
 
-    // if we have one play it, otherwise, play the first lowest value card
-    if (!best.empty()) {
-        game.play(best.front());
+    if (!not_trump.empty()) {
+        game.play(not_trump.front());
     } else {
         game.play(cards.back());
     }
 }
 
-/*
-1. If the player leads the trick, play the Card of the highest value
-2. If the player follows the trick and winning the first played card
-grants no points, play the lowest possible Card
-3. If the first played Card is of value and the player can win it
-without playing Card of Briscola suit, it will play first such a
-card from hand it can find
-4. If the player cannot find such a card, play the first Card with
-Briscola suit
-5. If no choices above are fitting, the player decides that the trick is
-unwinnable and plays the lowest possible Card
- */
+void rule_based_strategy(Game &game) {
+    // no winner yet, play first highest value card
+    if (!game.current_trick_winner()) {
+        auto highest = game.current_player_cards();
+        std::sort(highest.begin(), highest.end(), ::sort_highest_face);
+        game.play(highest.front());
+        return;
+    }
+
+    const auto trump = game.trump();
+    auto lowest = game.current_player_cards();
+    std::sort(lowest.begin(), lowest.end(), ::sort_lowest_face);
+
+    // otherwise, let's see if its worth winning, if not play our worst
+    if (game.current_trick_score() == 0) {
+        play_non_trump_before_trump(lowest, game);
+        return;
+    }
+
+    // otherwise, find cards that can beat the winner
+    const auto winner = game.current_trick_winner().value();
+    auto winning_lowest = lowest | std::ranges::views::filter([winner, trump](auto c) {
+        return winner.is_worse_than(c, trump);
+    });
+
+    // if we have them, and it earns points, do it
+    if (!winning_lowest.empty()) {
+        play_non_trump_before_trump(winning_lowest, game);
+        return;
+    }
+
+    // otherwise, just play the lowest card we have
+    play_non_trump_before_trump(lowest, game);
+}
 
 auto mcts_strategy(Game &game) {
     auto mcts = setup_mcts(game);
@@ -233,7 +243,7 @@ void human(Game &game) {
 
     std::cout << "Pick a card index (0,1,2): [";
     const auto &cards = game.current_player_cards();
-    for (auto c : cards) {
+    for (auto c: cards) {
         std::cout << c.to_string() << ", ";
     }
     std::cout << "]";
@@ -244,26 +254,28 @@ void human(Game &game) {
     }
     game.play(cards[index]);
 }
-static bool debug = true;
+
 double run_simulation(int seed) {
 //    std::cout << "Start game: " << seed << std::endl;
     Game game{true, seed};
     while (game.phase() == Phase::PLAY) {
         if (game.current_player() == 0) {
-            random_card_strategy(game);
+//            random_card_strategy(game);
+            rule_based_strategy(game);
 //            human(game);
-//            highest_valued_card_strategy(game);
         } else {
 //            random_card_strategy(game);
-            auto mcts = mcts_strategy(game);
-            if (debug) {
-                debug = false;
-                writeDotFile(mcts.getRoot(), "the_graph.dot");
-            }
+//            rule_based_strategy(game);
+            mcts_strategy(game);
+
+//            // debugging
+//            auto mcts = mcts_strategy(game);
+//            writeDotFile(mcts.getRoot(), "the_graph.dot");
         }
         game.score_and_take();
     }
-    std::cout << "Finished " << seed << ": " << game.to_string() << std::endl;
+
+//    std::cout << "Finished " << seed << ": " << game.to_string() << std::endl;
     int t0 = game.team_score(0);
     int t1 = game.team_score(1);
     if (t1 > t0) {
@@ -277,24 +289,6 @@ double run_simulation(int seed) {
 
 int main() {
     set_ai_player_index(1);
-//    Game game{true, 1};
-//    while (game.phase() == Phase::PLAY) {
-//        if (game.current_player() == 0) {
-////            human(game);
-//            highest_valued_card_strategy(game);
-//        } else {
-////            random_card_strategy(game);
-//            auto mcts = mcts_strategy(game);
-//            writeDotFile(mcts.getRoot(), "the_graph.dot");
-////            int test;
-////            std::cout << "well..: ";
-////            std::cin >> test;
-//        }
-//        game.score_and_take();
-//    }
-//    game.print();
-//    run_simulation(1);
-
     std::vector<int> n(100);
     std::iota(n.begin(), n.end(), 1);
     auto wins = std::transform_reduce(
